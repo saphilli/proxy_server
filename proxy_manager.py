@@ -1,42 +1,50 @@
-import socket,sys,_thread#import modules
+import proxy, threading,time,sys
+
+
+
+def background():
+    print("The following commands can be entered to carry out various actions:\n")
+    print("Enter 'block' to add a URL to the blacklist.\n")
+    print("Enter 'unblock' to remove a URL from the blacklist.\n")
+    print("Enter 'stop' to stop the proxy server.")
+    while True:
+        if (input() == 'stop'):
+            print("Shutting down proxy....")
+            sys.exit(0)
+
+
+
+
+thread1 = threading.Thread(target=background)
+thread1.daemon = True
+thread1.start()
+proxy.start_proxy()
+
+
+import time,datetime,os,json,socket,sys,_thread#import modules
 
 buffer_size = 4096
 max_connections = 5
+blacklisted = []
 blacklist = "blacklist.txt"
-
+blocked = []
 
 
 def start_proxy():
     print("Welcome to the proxy server!")
     listen_port = int(input("Please enter an available port number: "))
 
-    #block option
-    do_block = str(input("Add to blacklist of urls? (Y/N): "))
-    if(do_block == "Y"):
-        while True:
-            to_block = str(input("Enter the url that you want the proxy to block or enter 'skip' to skip: (Note - don't include ://') "))
-            if to_block == "skip":
-                break
-            bl_file = open(blacklist,"a+")
-            bl_file.write(to_block +"\n")
-            bl_file.close()
-    #unblock option
-    do_unblock = str(input("Remove urls from blacklist? (Y/N): "))
-    if(do_unblock == "Y"):
-        while True:
-            to_unblock = str(input("Enter the url that you want the proxy to unblock or enter 'skip' to skip: (Note - don't include ://') "))
-            if to_unblock == "skip":
-                break
-            bl_file = open(blacklist,'r')
-            lines = bl_file.readlines()
-            bl_file.close()
-            bl_file = open(blacklist,'w')
-            for l in lines:
-                if l != to_unblock+"\n":
-                    bl_file.write(l)
-            bl_file.close()
-    #make instance of socket
-    #SOCK_STREAM refers to the TCP protocol, AF_INET refers to ipv4
+    bl_file = open(blacklist,"w+")
+    data = ""
+    while True:
+        line = bl_file.read()
+        if not len(line):
+            break
+        data += line
+        f.close()
+        blocked = data.splitlines()
+        #make instance of socket
+        #SOCK_STREAM refers to the TCP protocol, AF_INET refers to ipv4
     try:
         s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         print("Socket created")
@@ -45,14 +53,15 @@ def start_proxy():
         s.listen(max_connections)
         print("Socket binded to " +str(listen_port))
         print("Proxy server has been activated")
+    except Exception as e:
+        print("Socket creation failed due to an error: \n"+ str(e))
+        sys.exit(2)
     except KeyboardInterrupt:
         s.close()
         print("\n[*] Shutting down the proxy server...")
         print("\n[*] Successfully shut down")
         sys.exit(1)
-    except Exception as e:
-        print("Socket creation failed due to an error: \n"+ str(e))
-        sys.exit(2)
+
     #infinite loop until error occurs, or it is interrupted
     while True:
         try:
@@ -69,6 +78,10 @@ def start_proxy():
             sys.exit(1)
     s.close()
 
+def is_blocked(browser, addr,parsed_message):
+    if not (parsed_message["url"] + ":" + str(parsed_message["port"])) in blocked:
+        return False
+    return True
 
 def parse_request(message):
     try:
@@ -103,48 +116,38 @@ def parse_request(message):
             "url"  :url,
             "protocol" :protocol,
         }
+    except Exception as e:
+        print("Error occurred while parsing the message: "+ str(e))
     except KeyboardInterrupt:
         s.close()
         print("\n[*] Shutting down the proxy server...")
         print("\n[*] Successfully shut down")
         sys.exit(1)
-    except Exception as e:
-        pass
-
-def is_blocked(host):
-    bl = open(blacklist,'r')
-    lines = bl.readlines()
-    for l in lines:
-        if l.find(host) != -1:
-            bl.close()
-            return True
-    bl.close()
-    return False
 
 def handle_request(browser,message,addr):
     try:
         parsed_message = parse_request(message)
-        is_url_blocked = is_blocked(parsed_message["host"])
+        block_status = is_blocked(browser,addr, parsed_message) #true = blocked
+        if block_status == True:
+            print("The requested URL is blocked")
+            browser.send("ERROR")
+
         host = parsed_message["host"]
         port = parsed_message["port"]
-        if (is_url_blocked == True):
-            print("**The url that was requested: "+host+ " has been blocked :(\n")
+        if port  == 443: #HTTPS common port 443
+            https_tunnel(host,port,browser,addr,parsed_message)
         else:
-            if port == 443: #HTTPS common port 443
-                https_tunnel(host,port,browser,addr,message)
-            else:
-                http_request(host,port,browser,addr,message)
+            http_request(host,port,browser,addr,parsed_message)
+    except Exception as e:
+        print("Error occurred while directing the request: "+ str(e))
     except KeyboardInterrupt:
         s.close()
         print("\n[*] Shutting down the proxy server...")
         print("\n[*] Successfully shut down")
         sys.exit(1)
-    except Exception as e:
-    #    print("Error occurred while directing the request: "+ str(e))
-        pass
 
 
-def https_tunnel(host,port,browser,addr,message):
+def https_tunnel(host,port,browser,addr,parsed_message):
     try:
         client = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         client.connect((host,port))
@@ -152,19 +155,20 @@ def https_tunnel(host,port,browser,addr,message):
         browser.sendall(reply.encode()) #
         browser.setblocking(0)
         client.setblocking(0)
-    except KeyboardInterrupt:
+    except Exception as e:
+        print("Error occurred"+ str(e))
+    except KeyboardInterrupt: #allow user to ctrl+c
         s.close()
         print("\n[*] Shutting down the proxy server...")
         print("\n[*] Successfully shut down")
         sys.exit(1)
-    except Exception as e:
-        print("Error occurred"+ str(e))
 
     while True:
         try:
             request = browser.recv(1024)
             client.send(request)
         except Exception as e:
+            #print("Error occurred while sending request: "+ str(e))
             pass
         try:
             reply = client.recv(1024)
@@ -172,33 +176,68 @@ def https_tunnel(host,port,browser,addr,message):
                 break
             browser.send(reply)
         except Exception as e:
+            #print("Error occurred while sending reply: "+ str(e))
             pass
-    print("Https Request completed ")
+    print("Https Request completed")
     client.close() #close sockets
     browser.close()
 
-def http_request(host,port,browser,addr,message):
+def http_request(host,port,browser,addr,parsed_message):
     try:
+        request = parsed_message["message"]
+        url = parsed_message["url"]
         s = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         s.connect((host,port))
-        s.sendall(message)
+        s.sendall(request)
+        cachedFile = open(filename,'wb+')
         while True:
             reply = s.recv(buffer_size)
             if(len(reply) > 0): #if the reply string is nonempty
+                cachedFile.write(reply)
                 browser.send(reply) #send a http reply to the client
-                print("Http Request completed")
+                tmp=float(len(reply))
+                tmp = float(tmp/1024)
+                tmp = "%.3s" % (str(tmp))
+                tmp = "%s KB" % (tmp)
+                print("Http Request completed:"+ str(addr[0]),str(tmp))
             else:
-                break
+                    break
+            s.close()
+            browser.close()
+    except Exception as e:
         s.close()
         browser.close()
+        sys.exit(1)
     except KeyboardInterrupt:
         s.close()
         print("\n[*] Shutting down the proxy server...")
         print("\n[*] Successfully shut down")
         sys.exit(1)
-    except Exception as e:
-        s.close()
-        browser.close()
-        sys.exit(1)
 
-start_proxy()
+def cache(reply, browser):
+    while True:
+        try:
+            if(len(reply)<1):
+                break
+            browser.send(reply)
+        except socket.error as e;
+            pass
+        browser.close()
+
+def check_cache(filename):
+    print("checking cache")
+    try:
+        f = open(filename,"rb")
+        cacheData = f.read()
+        f.close()
+    except Exception as e:
+        cacheData = None
+    if(cacheData != None):
+        print("Cache hit")
+        return cacheData
+    else:
+        print("Cache miss")
+        return None
+
+
+start_proxy
